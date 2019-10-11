@@ -117,7 +117,7 @@ class StatusCode {
   static const unauthenticated = 16;
 }
 
-class GrpcError {
+class GrpcError implements Exception {
   final int code;
   final String message;
   final Map<String, String> trailers;

@@ -53,6 +53,10 @@ class Http2ClientConnection implements connection.ClientConnection {
 
   /// Used for idle and reconnect timeout, depending on [_state].
   Timer _timer;
+
+  /// Used for making sure a single connection is not kept alive too long.
+  final Stopwatch _connectionLifeTimer = Stopwatch();
+
   Duration _currentReconnectDelay;
 
   final String host;
@@ -63,31 +67,42 @@ class Http2ClientConnection implements connection.ClientConnection {
   ChannelCredentials get credentials => options.credentials;
 
   String get authority =>
-      options.credentials.authority ?? port == 443 ? host : "$host:$port";
+      options.credentials.authority ?? (port == 443 ? host : "$host:$port");
+
+  String get scheme => options.credentials.isSecure ? 'https' : 'http';
 
   ConnectionState get state => _state;
 
+  static const _estimatedRoundTripTime = const Duration(milliseconds: 20);
+
   Future<ClientTransportConnection> connectTransport() async {
-    var socket = await Socket.connect(host, port);
-    if (_state == ConnectionState.shutdown) {
-      socket.destroy();
-      // TODO(sigurdm): Throw something nicer...
-      throw 'Shutting down';
-    }
     final securityContext = credentials.securityContext;
+    Socket socket = await Socket.connect(host, port);
     if (securityContext != null) {
+      // Todo(sigurdm): We want to pass supportedProtocols: ['h2']. http://dartbug.com/37950
       socket = await SecureSocket.secure(socket,
-          host: authority,
+          // This is not really the host, but the authority to verify the TLC
+          // connection against.
+          //
+          // We don't use `this.authority` here, as that includes the port.
+          host: options.credentials.authority ?? host,
           context: securityContext,
           onBadCertificate: _validateBadCertificate);
-      if (_state == ConnectionState.shutdown) {
-        socket.destroy();
-        // TODO(sigurdm): Throw something nicer...
-        throw 'Shutting down';
-      }
     }
-    socket.done.then((_) => _handleSocketClosed());
-    return ClientTransportConnection.viaSocket(socket);
+
+    final connection = ClientTransportConnection.viaSocket(socket);
+    socket.done.then((_) => _abandonConnection());
+
+    // Give the settings settings-frame a bit of time to arrive.
+    // TODO(sigurdm): This is a hack. The http2 package should expose a way of
+    // waiting for the settings frame to arrive.
+    await new Future.delayed(_estimatedRoundTripTime);
+
+    if (_state == ConnectionState.shutdown) {
+      socket.destroy();
+      throw _ShutdownException();
+    }
+    return connection;
   }
 
   void _connect() {
@@ -96,17 +111,44 @@ class Http2ClientConnection implements connection.ClientConnection {
       return;
     }
     _setState(ConnectionState.connecting);
-    connectTransport().then((transport) {
+    connectTransport().then((transport) async {
       _currentReconnectDelay = null;
       _transportConnection = transport;
+      _connectionLifeTimer
+        ..reset()
+        ..start();
       transport.onActiveStateChanged = _handleActiveStateChanged;
       _setState(ConnectionState.ready);
-      _pendingCalls.forEach(_startCall);
-      _pendingCalls.clear();
+
+      if (_hasPendingCalls()) {
+        // Take all pending calls out, and reschedule.
+        final pendingCalls = _pendingCalls.toList();
+        _pendingCalls.clear();
+        pendingCalls.forEach(dispatchCall);
+      }
     }).catchError(_handleConnectionFailure);
   }
 
+  /// Abandons the current connection if it is unhealthy or has been open for
+  /// too long.
+  ///
+  /// Assumes [_transportConnection] is not `null`.
+  void _refreshConnectionIfUnhealthy() {
+    final bool isHealthy = _transportConnection.isOpen;
+    final bool shouldRefresh =
+        _connectionLifeTimer.elapsed > options.connectionTimeout;
+    if (shouldRefresh) {
+      _transportConnection.finish();
+    }
+    if (!isHealthy || shouldRefresh) {
+      _abandonConnection();
+    }
+  }
+
   void dispatchCall(ClientCall call) {
+    if (_transportConnection != null) {
+      _refreshConnectionIfUnhealthy();
+    }
     switch (_state) {
       case ConnectionState.ready:
         _startCall(call);
@@ -219,7 +261,7 @@ class Http2ClientConnection implements connection.ClientConnection {
     _connect();
   }
 
-  void _handleSocketClosed() {
+  void _abandonConnection() {
     _cancelTimer();
     _transportConnection = null;
 
@@ -273,3 +315,5 @@ class Http2ClientConnection implements connection.ClientConnection {
     return validator(certificate, authority);
   }
 }
+
+class _ShutdownException implements Exception {}

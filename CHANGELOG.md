@@ -1,3 +1,34 @@
+## 2.1.2
+
+* Fix bug introduced in 2.1.1 where the port would be added to the default authority when making a
+  secure connection.
+
+## 2.1.1
+
+* Fix bug introduced in 2.1.0 where an explicit `authority` would not be used when making a secure 
+  connection.
+
+## 2.1.0
+
+* Do a health check of the http2-connection before making request.
+* Introduce `ChannelOptions.connectionLimit` the longest time a single connection is used for new
+  requests.
+* Use Tcp.nodelay to improve client call speed.
+* Use SecureSocket supportedProtocols to save a round trip when establishing a secure connection.
+* Allow passing http2 `ServerSettings` to `Server.serve`.
+
+## 2.0.3
+
+* GrpcError now implements Exception to indicate it can be reasonably handled.
+
+## 2.0.2
+
+* Fix computation of the audience given to metadata providers to include the scheme.
+
+## 2.0.1
+
+* Fix computation of authority. This should fix authorization.
+
 ## 2.0.0+1
 
 * Fix imports to ensure grpc-web.dart has no accidental transitive dependencies on dart:io.
