@@ -108,8 +108,7 @@ class ClientCall<Q, R> implements Response {
   }
 
   void onConnectionError(error) {
-    _terminateWithError(new GrpcError.unavailable(
-        'Error connecting: $error', error is Exception ? error : null));
+    _terminateWithError(GrpcError.unavailable('Error connecting: $error'));
   }
 
   void _terminateWithError(GrpcError error) {
@@ -199,7 +198,7 @@ class ClientCall<Q, R> implements Response {
       }
       _responses.onPause = _responseSubscription.pause;
       _responses.onResume = _responseSubscription.resume;
-      _responses.onCancel = _safeTerminate;
+      _responses.onCancel = _responseSubscription.cancel;
     }
   }
 
@@ -243,7 +242,9 @@ class ClientCall<Q, R> implements Response {
       // TODO(jakobr): Parse more!
       if (metadata.containsKey('grpc-status')) {
         final status = int.parse(metadata['grpc-status']);
-        final message = metadata['grpc-message'];
+        final message = metadata['grpc-message'] == null
+            ? null
+            : Uri.decodeFull(metadata['grpc-message']);
         if (status != 0) {
           _responseError(GrpcError.custom(status, message));
         }
@@ -284,7 +285,9 @@ class ClientCall<Q, R> implements Response {
       // If status code is missing, we must treat it as '0'. As in 'success'.
       final statusCode = status != null ? int.parse(status) : 0;
       if (statusCode != 0) {
-        final message = _headerMetadata['grpc-message'];
+        final message = _headerMetadata['grpc-message'] == null
+            ? null
+            : Uri.decodeFull(_headerMetadata['grpc-message']);
         _responseError(
             new GrpcError.custom(statusCode, message, _headerMetadata));
       }
